@@ -8,7 +8,9 @@ Created on Tue Mar 19 21:34:47 2019
 
 # description
 
-# TODO: add description
+# TODO: 
+#   - add description
+#   - speed up loops by only predicting on last obs for SVM and iforest
 
 #%%
 # load libraries
@@ -103,7 +105,7 @@ def res_bounds(res, lq = 25, uq = 75, llf = 0.95, ulf = 1.2, factor = 2):
     return(df.outlier.tolist())
     
     
-def res_iforest(features, bass=0, contamination=.01):
+def res_iforest(features, contamination=.01):
     '''
     use loess curve residuals and isolation forest to identify outliers
     
@@ -132,7 +134,7 @@ def res_iforest(features, bass=0, contamination=.01):
     
     return(iforest)
     
-def res_svm1(features, bass=0, nu = .01, kernel = "rbf", gamma = .01):
+def res_svm1(features, nu = .01, kernel = "rbf", gamma = .01):
     '''
     use loess curve residuals and 1 class svm to identify outliers
     
@@ -384,6 +386,8 @@ for name in names :
     # returns and first lag of it
     ts_returns = ts.pct_change()
     ts_returns.iloc[0] = 0
+    ts_returns = ts_returns.replace(np.inf, 0)
+    ts_returns = ts_returns.replace(np.NINF, 0)
     ts_returns_lag = ts_returns.shift(1)
     ts_returns_lag.iloc[0] = 0
 
@@ -400,13 +404,13 @@ for name in names :
     # methods for detecting outliers. each one returns a list indicating if 
     # value is an outlier
     bounds_lst.extend(res_bounds(res))
-    iforest_lst.extend(res_iforest(features, bass=0, contamination=.01))
-    svm1_lst.extend(res_svm1(features, bass=0, nu = .01, kernel = "rbf", 
+    iforest_lst.extend(res_iforest(features, contamination=.01))
+    svm1_lst.extend(res_svm1(features, nu = .04, kernel = "rbf", 
                              gamma = .01))
     gesd_lst.extend(res_gesd(res, maxOLs = 15, alpha = 0.05))
     dbgesd_lst.extend(res_dbgesd(res, maxOLs = 8, alpha = 0.05))
                 
-    print('done with column: ', cn, '/', len(names))
+    print('done with TS: ', cn, '/', len(names))
     cn = cn +1
 
 # create columns for predictions
@@ -449,6 +453,8 @@ for name in names :
     # returns and first lag of it
     ts_returns = ts.pct_change()
     ts_returns.iloc[0] = 0
+    ts_returns = ts_returns.replace(np.inf, 0)
+    ts_returns = ts_returns.replace(np.NINF, 0)
     ts_returns_lag = ts_returns.shift(1)
     ts_returns_lag.iloc[0] = 0
     
@@ -488,8 +494,8 @@ for name in names :
         # methods for detecting outliers. each one returns a list indicating if 
         # value is an outlier
         bounds = res_bounds(res)
-        iforest = res_iforest(features, bass=0, contamination=.01)
-        svm1 = res_svm1(features, bass=0, nu = .01, kernel = "rbf", gamma = .01)
+        iforest = res_iforest(features, contamination=.01)
+        svm1 = res_svm1(features, nu = .01, kernel = "rbf", gamma = .01)
         gesd = res_gesd(res, maxOLs = 15, alpha = 0.05)
         dbgesd = res_dbgesd(res, maxOLs = 8, alpha = 0.05)
         
@@ -502,9 +508,9 @@ for name in names :
         res_gesd_lst.append(gesd[len(gesd)-1])
         res_dbgesd_lst.append(dbgesd[len(dbgesd)-1])
         
-        print('done with step: ', i, 'in col: ', cn)
+        print('done with step: ', i, 'in TS: ', cn)
         
-    print('done with column: ', cn, '/', len(names))
+    print('done with TS: ', cn, '/', len(names))
     cn = cn +1
 
 # create columns for predictions
