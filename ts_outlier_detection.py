@@ -10,7 +10,9 @@ Created on Tue Mar 19 21:34:47 2019
 
 # TODO: 
 #   - add description
-#   - speed up loops by only predicting on last obs for SVM and iforest
+#   - speed up loops by only predicting on last obs where appropriate
+#   - add local outlier factor and gaussian envelope
+#   - extract anonamoly sores from models as well to use as features
 
 #%%
 # load libraries
@@ -21,6 +23,8 @@ import pyper as pr
 import numpy as np
 from sklearn.ensemble import IsolationForest
 from sklearn.svm import OneClassSVM
+from sklearn.neighbors import LocalOutlierFactor
+from sklearn.covariance import EllipticEnvelope
 from PyAstronomy import pyasl
 from sklearn.preprocessing import StandardScaler
 
@@ -105,7 +109,7 @@ def res_bounds(res, lq = 25, uq = 75, llf = 0.95, ulf = 1.2, factor = 2):
     return(df.outlier.tolist())
     
     
-def res_iforest(features, contamination=.01):
+def res_iforest(features, contamination=.01, score = False):
     '''
     use loess curve residuals and isolation forest to identify outliers
     
@@ -129,12 +133,16 @@ def res_iforest(features, contamination=.01):
     model =  IsolationForest(contamination=.01, random_state=88)
     model.fit(features)
    
-    # predict on the residuals
-    iforest = model.predict(features).tolist()
+    # predict on the features
+    y_pred = model.predict(features).tolist()
     
-    return(iforest)
+    if score == False:
+        return(y_pred)
     
-def res_svm1(features, nu = .01, kernel = "rbf", gamma = .01):
+    scores = model.decision_function(features).tolist()
+    return(y_pred, scores)
+    
+def res_svm1(features, nu = .01, kernel = "rbf", gamma = .01, score = False):
     '''
     use loess curve residuals and 1 class svm to identify outliers
     
@@ -161,15 +169,99 @@ def res_svm1(features, nu = .01, kernel = "rbf", gamma = .01):
     
     #res = np.asarray(res).reshape(-1,1)
     
-    # instantiate and fit i forest on residuals
+    # instantiate and fit svm on residuals
     model = OneClassSVM(nu=nu, kernel=kernel, gamma=gamma)
     model.fit(features)
     
-    # predict on the residuals
-    svm1 = model.predict(features).tolist()
+    # predict on the features
+    y_pred = model.predict(features).tolist()
     
-    return(svm1)
+    if score == False:
+        return(y_pred)
     
+    scores = model.decision_function(features).tolist()
+    return(y_pred, scores)
+
+def res_lof(features, contamination=0.1, n_neighbors = 20, score = False):
+    '''
+    use loess curve residuals and local outlier factor to identify outliers
+    
+    Parameters
+    ----------
+    features: dataframe
+        dataframe of features
+    contamination: decimal 
+        proportion of outliers expected in data
+    n_neighbors: int
+        number of neighbors to use
+    score: boolean
+        return binary prediction and outlier scores
+        
+    Returns
+    -------
+    list
+        Binary series with same length as input TS. A value of -1 indicates the
+        corresponding value in TS is an outlier     
+    list
+        outlier score. series with same length as input TS. only returned if 
+        score = True
+    '''
+    
+    #res = np.asarray(res).reshape(-1,1)
+    
+    # instantiate and predict lof on features
+    clf = LocalOutlierFactor(n_neighbors = n_neighbors, 
+                             contamination = contamination)
+    y_pred = clf.fit_predict(features)
+    
+    if score == False:
+        return(y_pred.tolist())
+    
+    # outlier scores
+    scores = clf.negative_outlier_factor_
+    
+    return(y_pred.tolist(), scores.tolist())
+    
+def res_ee(features, contamination=0.1, score = False):
+    '''
+    use loess curve residuals and elliptic envelope to identify outliers
+    
+    Parameters
+    ----------
+    features: dataframe
+        dataframe of features
+    contamination: decimal 
+        proportion of outliers expected in data
+    score: boolean
+        return binary prediction and outlier scores
+        
+    Returns
+    -------
+    list
+        Binary series with same length as input TS. A value of -1 indicates the
+        corresponding value in TS is an outlier     
+    list
+        outlier score. series with same length as input TS. only returned if 
+        score = True
+    '''
+    
+    #res = np.asarray(res).reshape(-1,1)
+    
+    # instantiate and predict lof on features
+    model = EllipticEnvelope(assume_centered = True, store_precision = False,
+                             contamination = .1, random_state = 888)
+    
+    model.fit(features)
+    y_pred =  model.predict(features)
+       
+    if score == False:
+        return(y_pred.tolist())
+    
+    # outlier scores
+    scores = model.decision_function(features)
+    
+    return(y_pred.tolist(), scores.tolist())
+
 def res_gesd(res, maxOLs = 15, alpha = 0.05):
     '''
     use loess curve residuals and generalized extreme studentized deviation
@@ -216,7 +308,7 @@ def res_dbgesd(res, maxOLs = 8, alpha = 0.05):
         
     maxOLs: int
         max number of outliers to identify using GESD. Note that the number 
-        passed to generalizedESD is actually 2*`maxOLs
+        passed to generalizedESD is actually 2*maxOLs
         
     alpha: decimal
         signifigance level for identifying outlier
@@ -337,7 +429,7 @@ from pandas_datareader import data # get stock data
 
 # download stock data and select only closing prices
 tickers = ['^GSPC', 'AAPL', 'GOOGL', 'VZ']
-panel_data = data.DataReader(tickers, 'yahoo', '2014-08-25', '2019-01-25')
+panel_data = data.DataReader(tickers, 'yahoo', '2018-08-25', '2019-01-25')
 close_prices = panel_data['Close']
 
 # transform from wide to long format
@@ -360,10 +452,15 @@ close_prices.Date = pd.to_datetime(close_prices.Date)
 close_prices.sort_values(by = ['Symbols', 'Date'], inplace = True)
 
 # create copy of close_prices with errors in it
-error_df = impute_error(close_prices)
+error_df = impute_error(close_prices, lb=.8, ub=1.2)
 ts_df = close_prices.copy()
 ts_df['error_value'] = error_df.value
 ts_df['error_ind'] = np.where(ts_df.value != ts_df.error_value, 1, 0)
+
+
+#%%
+
+
 
 #%%
 # identify outliers
@@ -371,6 +468,8 @@ ts_df['error_ind'] = np.where(ts_df.value != ts_df.error_value, 1, 0)
 bounds_lst = []
 iforest_lst = []
 svm1_lst = []
+lof_lst = []
+ee_lst = []
 gesd_lst = []
 dbgesd_lst = []
 
@@ -407,6 +506,9 @@ for name in names :
     iforest_lst.extend(res_iforest(features, contamination=.01))
     svm1_lst.extend(res_svm1(features, nu = .04, kernel = "rbf", 
                              gamma = .01))
+    lof_lst.extend(res_lof(features, contamination=0.01, n_neighbors = 20, 
+                           score = False))
+    ee_lst.extend(res_ee(features, contamination = .01))
     gesd_lst.extend(res_gesd(res, maxOLs = 15, alpha = 0.05))
     dbgesd_lst.extend(res_dbgesd(res, maxOLs = 8, alpha = 0.05))
                 
@@ -417,15 +519,31 @@ for name in names :
 ts_df['bounds'] = bounds_lst
 ts_df['iforest'] = iforest_lst
 ts_df['svm1'] = svm1_lst
+ts_df['lof'] = lof_lst
+ts_df['ee'] = ee_lst
 ts_df['gesd'] = gesd_lst
 ts_df['dbgesd'] = dbgesd_lst
 
 # replace -1 with 1 and 0 otherwise
 ts_df['iforest'] = np.where(ts_df['iforest'] == -1, 1,0)
 ts_df['svm1'] = np.where(ts_df['svm1'] == -1, 1,0)
+ts_df['lof'] = np.where(ts_df['lof'] == -1, 1,0)
+ts_df['ee'] = np.where(ts_df['ee'] == -1, 1,0)
 
 # calculate metrics for the different predictions
-calc_metrics(ts_df, pred_cols = ['bounds', 'iforest', 'svm1', 'gesd', 'dbgesd'])
+calc_metrics(ts_df, pred_cols = ['bounds', 'iforest', 'svm1', 'lof', 'ee',
+                                 'gesd', 'dbgesd'])
+
+#%%
+
+
+
+
+
+
+
+
+
 
 #%%
 # identify outliers while emulating a real time scenerio, stepping through each
@@ -435,11 +553,20 @@ returns_lst = []
 returns_lag_lst = []
 res_lst = []
 res2_lst = []
-res_bounds_lst = []
-res_iforest_lst = []
-res_svm1_lst = []
-res_gesd_lst = []
-res_dbgesd_lst = []
+bounds_lst = []
+iforest_lst = []
+svm1_lst = []
+lof_lst = []
+ee_lst = []
+gesd_lst = []
+
+s_iforest_lst = []
+s_svm1_lst = []
+s_lof_lst = []
+s_ee_lst = []
+
+
+#res_dbgesd_lst = [] # doesnt work for real time detection
 
 scaler = StandardScaler()
 names = ts_df.Symbols.unique()
@@ -466,12 +593,17 @@ for name in names :
     zeros = pd.Series([0]*90).tolist()
     res_lst.extend(zeros)
     res2_lst.extend(zeros)
-    res_bounds_lst.extend(zeros)
-    res_iforest_lst.extend(zeros)
-    res_svm1_lst.extend(zeros)
-    res_gesd_lst.extend(zeros)
-    res_dbgesd_lst.extend(zeros)
+    bounds_lst.extend(zeros)
+    iforest_lst.extend(zeros)
+    svm1_lst.extend(zeros)
+    lof_lst.extend(zeros)
+    ee_lst.extend(zeros)
+    gesd_lst.extend(zeros)  
     
+    s_iforest_lst.extend(zeros)
+    s_svm1_lst.extend(zeros)
+    s_lof_lst.extend(zeros)
+    s_ee_lst.extend(zeros)
     
     # for each value in TS 91 to the end
     for i in range(90,ts.shape[0]):
@@ -494,19 +626,31 @@ for name in names :
         # methods for detecting outliers. each one returns a list indicating if 
         # value is an outlier
         bounds = res_bounds(res)
-        iforest = res_iforest(features, contamination=.01)
-        svm1 = res_svm1(features, nu = .01, kernel = "rbf", gamma = .01)
+        iforest, s_iforest = res_iforest(features, contamination=.01, 
+                                         score = True)
+        svm1, s_svm1 = res_svm1(features, nu = .01, kernel = "rbf", gamma = .01, 
+                        score = True)
+        lof, s_lof = res_lof(features, contamination=0.1, n_neighbors = 20, 
+                             score = True)
+        ee, s_ee = res_ee(features, contamination=0.1, score = True)
         gesd = res_gesd(res, maxOLs = 15, alpha = 0.05)
-        dbgesd = res_dbgesd(res, maxOLs = 8, alpha = 0.05)
+ 
         
         # append last observation to lists
         res_lst.append(res[len(res)-1])
         res2_lst.append(res2[len(res2)-1])
-        res_bounds_lst.append(bounds[len(bounds)-1])
-        res_iforest_lst.append(iforest[len(iforest)-1])
-        res_svm1_lst.append(svm1[len(svm1)-1])
-        res_gesd_lst.append(gesd[len(gesd)-1])
-        res_dbgesd_lst.append(dbgesd[len(dbgesd)-1])
+        bounds_lst.append(bounds[len(bounds)-1])
+        iforest_lst.append(iforest[len(iforest)-1])
+        svm1_lst.append(svm1[len(svm1)-1])
+        lof_lst.append(lof[len(lof)-1])
+        ee_lst.append(ee[len(ee)-1])
+        gesd_lst.append(gesd[len(gesd)-1])
+        
+        s_iforest_lst.append(s_iforest[len(s_iforest)-1])
+        s_svm1_lst.append(s_svm1[len(s_svm1)-1])
+        s_lof_lst.append(s_lof[len(s_lof)-1])
+        s_ee_lst.append(s_ee[len(s_ee)-1])
+        
         
         print('done with step: ', i, 'in TS: ', cn)
         
@@ -518,18 +662,27 @@ ts_df['returns'] = returns_lst
 ts_df['returns_lag'] = returns_lag_lst
 ts_df['res'] = res_lst
 ts_df['res2'] = res2_lst
-ts_df['bounds'] = res_bounds_lst
-ts_df['iforest'] = res_iforest_lst
-ts_df['svm1'] = res_svm1_lst
-ts_df['gesd'] = res_gesd_lst
-ts_df['dbgesd'] = res_dbgesd_lst
+ts_df['bounds'] = bounds_lst
+ts_df['iforest'] = iforest_lst
+ts_df['svm1'] = svm1_lst
+ts_df['lof'] = lof_lst
+ts_df['ee'] = ee_lst
+ts_df['gesd'] = gesd_lst
+
+ts_df['s_iforest'] = s_iforest_lst
+ts_df['s_svm1'] = s_svm1_lst
+ts_df['s_lof'] = s_lof_lst
+ts_df['s_ee'] = s_ee_lst
 
 # replace -1 with 1 and 0 otherwise
 ts_df['iforest'] = np.where(ts_df['iforest'] == -1, 1,0)
 ts_df['svm1'] = np.where(ts_df['svm1'] == -1, 1,0)
+ts_df['lof'] = np.where(ts_df['lof'] == -1, 1,0)
+ts_df['ee'] = np.where(ts_df['ee'] == -1, 1,0)
 
 # calculate metrics for the different predictions
-calc_metrics(ts_df, pred_cols = ['bounds', 'iforest', 'svm1', 'gesd', 'dbgesd'])
+calc_metrics(ts_df, pred_cols = ['bounds', 'iforest', 'svm1', 'lof', 'ee',
+                                 'gesd'])
 #%%
 
 
